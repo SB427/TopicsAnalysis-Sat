@@ -1,0 +1,312 @@
+---
+title: Les éléments de la satisfaction liée à l'expérience de l'hôtellerie en Polynésie
+  française
+author: "SB"
+date: "01/11/2021"
+output: 
+  html_document:
+    toc: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,include=TRUE, warning=FALSE, message=FALSE)
+library(tidyverse)
+library(lubridate)
+library(quanteda)
+library(quanteda.textplots)
+library(quanteda.textstats)
+library(quanteda.textmodels)
+library(cleanNLP)
+
+library(ggwordcloud)
+library(ggmosaic)
+library(rcompanion)
+
+library(cowplot)
+
+library ("FactoMineR")
+library(factoextra)
+
+library(seededlda)
+
+library(gam)
+
+# library(cld3)
+library(reshape2)
+
+#palette de couleur
+col<-c("firebrick","Gold3","Darkgreen")
+theme_set(theme_minimal())
+
+```
+
+# Un corpus d'avis client de l'hôtellerie en Polynésie issu de Trip Advisor
+
+```{r data}
+# df<-read_rds("Polynesie_tot.rds")
+# 
+# 
+# df2<-df%>%mutate(pension=ifelse(str_detect(Hotel,"[p|P]ension|[r|R]anch|[b|B]unga*|[f|F]are|[c|C]halet|[a|A]uberge|[c|C]ottage|[g|G]esthouse|[v|V]illa|[c|C]amping|[l|L]odge|[d|D]ortoir|[c|C]hambre*")==T, 1,0))
+# 
+# df2<-df2%>%
+#   mutate(across(c(categorie, prix_classe,Taille_hotel),~coalesce(.x,replace_na("inconnue"))))%>%
+#   filter(pension==0, categorie!="Hôtel famillial", prix_classe!="<10 000", Taille_hotel!=" 1-5 chambres",Note!=-1)
+# 
+#                 
+# 
+# df2%>%group_by(Hotel)%>%summarise(nb_com=n())%>%ggplot(aes(nb_com))+geom_bar(fill="darkred")+labs(x="Nombre de commentaires", y = "Nombre d'hôtels", title = "Distribution des commentaires")+coord_flip()
+# 
+# 
+# df2<-df2 %>%
+#   mutate(NPS=ifelse(Note<=4, "Détracteurs", 
+#                     ifelse(Note==5 ,"Promoteurs", "Passifs")))
+
+df2<-read_rds("polynesie_hotel.rds")
+
+
+hotel<-df2%>%group_by(Hotel)%>%summarise(nb_com=n())%>%mutate(Hotel=as.factor(Hotel))%>%arrange(desc(nb_com))
+
+ggplot(hotel)+
+  geom_col(aes(x=fct_reorder(Hotel,nb_com), y=nb_com), fill="darkred")+
+  labs(x=NULL, y= "nb commentaires", title="Distribution des commentaires", subtitle = "n hôtels = 52, n commentaires = 24 031", caption = "data Trip Advisor entre 2001 et 2020")+
+  coord_flip()
+
+year<-df2%>%mutate(année=as.factor(year(Date)))%>%group_by(année)%>%summarise(nb_com=n())
+
+ggplot(year)+
+  geom_col(aes(x=année, y=nb_com), fill="yellow3")+
+  labs(x=NULL, y= "nb commentaires", title="Distribution des commentaires", subtitle = "n hôtels = 52, n commentaires = 24 031", caption = "data Trip Advisor entre 2001 et 2020")+
+  coord_flip()
+
+```
+
+
+24 031 avis clients sur 52 hôtels différents
+
+## Distribution des notes
+
+Beaucoup d'hôtels avec peu de commentaires. Des notes exceptionnelles.
+
+```{r des}
+
+ggplot(df2, aes(x=Note))+
+  geom_histogram(binwidth = 0.5,aes(fill=NPS))+
+  labs( title= " Distribution des scores NPS", 
+        subtitle = paste("Note moyenne =",round(mean(df2$Note),3)," -  Note médiane =",round(median(df2$Note),3)), 
+        caption = paste("n=",nrow(df2),"\nData TripAdvisor"), 
+        y = "Fréquence")+ 
+  scale_fill_manual(values=col)
+
+ 
+```
+
+## Description des commentaires
+
+On reconstitue le corpus avec les noms communs, les noms propres, les adjectifs et les verbes.
+
+```{r clnNlp}
+
+# cnlp_init_udpipe(model_name = "french")
+# annotate<-cnlp_annotate(df2, text_name = "Commetaire",doc_name = "ID", verbose = 1000)
+# 
+# obj<-annotate$token
+# 
+# 
+# obj<-read_rds("annotationPOS_hotel.rds")
+# 
+# obj<-obj%>%mutate(nbcar=nchar(lemma))
+# 
+# 
+# text2<-obj%>%filter(upos %in% c("ADJ","VERB","NOUN","PROPN"),nbcar>2)
+# 
+# summary(text2$nbcar)
+# 
+# text2<-text2%>%group_by(doc_id)%>%summarise(text=paste(lemma , collapse = " "))
+# 
+# df2<-inner_join(df2,text2, by=c("ID"="doc_id"))
+
+```
+
+On crée le corpus, on ajuste les tokens avec les collocations.
+
+```{r tm}
+
+# 1 définir le corpus
+
+corpus<-corpus(df2,text_field ="text")
+
+# 2 tokeniser le corpus
+
+tok<-tokens(corpus, remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE, remove_url = TRUE, remove_separators = TRUE)%>%
+  tokens_remove(stopwords("fr"))
+
+#Colloc des noms propres
+toks3 <- tokens_select(tok, pattern = "^([A-Z][a-z\\-]{2,})", valuetype = "regex",
+                       case_insensitive = FALSE, padding = TRUE)
+tstat <- textstat_collocations(toks3, size = 2:3, tolower = FALSE)
+
+tok<-tokens_compound(tok, pattern = tstat[tstat$z>8])
+
+
+#Colloc du reste
+toks4 <- tokens_select(tok, pattern = "^([a-z][a-z\\-]{2,})", valuetype = "regex",
+                       case_insensitive = FALSE, padding = TRUE)
+
+colloc<-textstat_collocations(toks4, min_count = 10, size=2:3, tolower = FALSE)
+ggplot(colloc, aes(z))+geom_boxplot()
+
+
+tok<-tokens_compound(tok, pattern = colloc[colloc$z>25])
+
+
+# 3 construire le dfm 
+
+
+dfm<-dfm(tok)
+textplot_wordcloud(dfm,max_words = 200, color = rev(RColorBrewer::brewer.pal(10, "Spectral")))
+
+
+
+#On construit un dfm groupé
+dfm2 <-tok %>%
+    tokens_group(groups = NPS) %>% 
+  dfm()
+
+# 4 afficher le wordcloud
+
+stat<- dfm2 %>% 
+  textstat_frequency(n = 50,  groups = NPS)
+
+g_b<-ggplot(stat, aes(label = feature)) +
+  geom_text_wordcloud(aes(size=log(frequency), color=group)) +
+  theme_minimal()+
+  facet_wrap(vars(group))+
+  scale_color_manual(values=col)+ 
+  labs(title="Nuage des 50 mots les plus fréquents selon les groupes",
+       caption = "La taille des mots est proportionnelle au log de leurs fréquences")
+g_b
+
+#keyness
+# Calculate keyness and determine "Promoteurs" as target group againts all other categories
+result_keyness <- textstat_keyness(dfm2, target = "Promoteurs")
+
+# Plot estimated word keyness
+g1<-textplot_keyness(result_keyness,   n = 30L, labelsize = 3,   show_legend = FALSE, 
+                     show_reference = FALSE,   color = c("Darkgreen", "gray"))+
+  xlim(0,350) + 
+  labs(x=NULL)
+
+
+result_keyness <- textstat_keyness(dfm2, target = "Détracteurs" )
+g2<-textplot_keyness(result_keyness,   n = 30L, labelsize = 3,   show_legend = FALSE,   
+                     show_reference = FALSE,   color = c("firebrick", "gray"))+
+  xlim(0,150)+ 
+  labs(x=NULL)
+
+
+result_keyness <- textstat_keyness(dfm2, target = "Passifs")
+g3<-textplot_keyness(result_keyness,   n = 30L, labelsize = 3,   show_legend = FALSE,   show_reference = FALSE,    color = c("gold2", "gray"))+xlim(0,200)+ labs(x=NULL)
+
+
+
+p<- plot_grid(g2, g3 ,g1,  labels = c('Détracteurs', 'Passifs', 'Promoteurs'), label_size = 12, ncol=3)
+title <- ggdraw() + draw_label("NPS : Les raisons qui conduisent à la recommandation (keyness)", fontface='bold')
+note <- ggdraw()+ draw_text("Les valeurs représentent le keyness des termes.\nIl mesure leur caractère distinctif par une statistique du chi²", size=8,x = 0.5, y = 0.5)
+
+plot_grid(title, p,note, ncol=1, rel_heights=c(0.1, 1)) # rel_heights values control title margins
+
+```
+
+
+# Modèle de *topics* supervisé : seededLDA
+
+## Le dictionnaire
+
+On crée un dictionnaire des attributs d'un séjour en Polynésie. On s'attend à trouver deux types d'information dans les commentaires : ce qui est lié à la Polynésie et à son cadre exceptionnel, et ce qui est lié à l'hôtel et à l'expérience vécue par les clients. On cherche à rester factuel, sans a priori sur les qualificatifs de ces attributs.
+
+```{r dict}
+
+dict <- quanteda::dictionary(list(Paysage = c("motu", "océan","lagon","plage", "récif", "corail", "coraux"),
+                     Activité = c("vélo","kayak","nage","excursion","golf","baleine","dauphin","plongée","requin","tortue","snorkeling"),
+                         Service = c("restaurant", "petit_déjeuner", "cuisine","bar","piscine","massage","thalasso"),
+                         Accueil = c("accueil","personnel","conseil","équipe","réservation","réception","annulation"),
+                         Chambre =c("chambre","salle_bain","lit","toilettes"),
+                         Prix=c("prix","qualité_prix")))
+
+dict
+
+head(dfm_lookup(dfm, dict))
+
+```
+
+## Le modèle : seedLDA
+
+On ajuste d'abord le vocabulaire, puis on lance directement le modèle. On décrit ensuite les *topics*.
+
+
+
+```{r seedLDA}
+
+news_dfm <- dfm %>%
+  dfm_trim(min_docfreq = 0.0001, max_termfreq = 0.995, docfreq_type = "prop",termfreq_type = "quantile")
+
+
+set.seed(1234)
+slda <- textmodel_seededlda(news_dfm, dict, residual = TRUE)
+
+
+
+lda_res<-as.data.frame(seededlda::terms(slda, 25))%>%
+  mutate(rank=as.numeric(row.names(.)))%>%
+  melt(id.vars=c("rank"))
+
+ggplot(lda_res, aes(x=variable, y= rank, group =  value , label = value)) + 
+  scale_y_reverse() +
+  geom_text(aes(color=variable,size=8/log(rank)))+
+  theme_minimal()+
+  scale_color_hue()+
+  guides(color="none",size="none")
+
+
+```
+
+
+## Analyse factorielle
+
+On récupère les topics dominants pour chaque commentaire, et on croise cela avec les profils de recommandation.
+
+```{r ca}
+
+news_dfm$seededtopic <- seededlda::topics(slda)
+
+summary(news_dfm$seededtopic)
+
+ca<- table(news_dfm$seededtopic, news_dfm$NPS)
+prop.table(ca, 2)
+
+res.ca <- CA (ca, graph = FALSE)
+fviz_ca_biplot (res.ca, repel = TRUE)
+
+```
+
+
+## Modèle GAM
+
+Pour finir, on cherche à expliquer la note en fonction des topics abordés dans les commentaires, en utilisant des modèles GAM :
+
+```{r GAM}
+
+theta2<-slda$theta
+topic2<-cbind(df2,theta2)
+
+mod1 <- gam(Note ~ s(Paysage) + s(Activité)+ s(Service)+ s(Accueil)+ s(Chambre)+ s(Prix), 
+data = topic2, family = gaussian)
+
+summary(mod1)
+
+par(mfrow = c(2, 3))
+
+termplot(mod1,rug = TRUE, se = TRUE,  terms = c("s(Paysage)", "s(Activité)", "s(Service)", "s(Accueil)", "s(Chambre)", "s(Prix)"))
+
+```
+
